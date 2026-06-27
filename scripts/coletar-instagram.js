@@ -22,24 +22,21 @@ const { createClient } = require('@supabase/supabase-js')
 
 // ── Validação de ambiente ────────────────────────────────────────────
 const SUPABASE_URL = process.env.SUPABASE_URL
-const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY  // service_role bypassa o RLS
 
 console.log('🔍 Diagnóstico de ambiente:')
-console.log('  SUPABASE_URL definida:    ', !!process.env.SUPABASE_URL)
-console.log('  SUPABASE_ANON_KEY definida:', !!process.env.SUPABASE_ANON_KEY)
-// Variáveis com prefixo VITE_ não funcionam no Node.js — apenas no Vite/browser
-console.log('  VITE_SUPABASE_URL definida:    ', !!process.env.VITE_SUPABASE_URL, '(não usar)')
-console.log('  VITE_SUPABASE_ANON_KEY definida:', !!process.env.VITE_SUPABASE_ANON_KEY, '(não usar)')
+console.log('  SUPABASE_URL definida:        ', !!process.env.SUPABASE_URL)
+console.log('  SUPABASE_SERVICE_KEY definida:', !!process.env.SUPABASE_SERVICE_KEY)
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error('❌ SUPABASE_URL e SUPABASE_ANON_KEY são obrigatórias')
+  console.error('❌ SUPABASE_URL e SUPABASE_SERVICE_KEY são obrigatórias')
   console.error('   Configure as secrets no GitHub: Settings → Secrets → Actions')
-  console.error('   Nomes esperados: SUPABASE_URL e SUPABASE_ANON_KEY (sem prefixo VITE_)')
   process.exit(1)
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: ws },
+  auth: { persistSession: false },  // scripts server-side não usam sessão
 })
 const HOJE = new Date().toISOString().slice(0, 10)
 
