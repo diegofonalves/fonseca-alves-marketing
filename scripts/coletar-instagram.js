@@ -1,32 +1,16 @@
 'use strict'
 
-/**
- * Coleta automática de dados públicos do Instagram
- *
- * Limitações reais do Instagram (2025):
- * - Posts e reels exigem autenticação para dados completos (views, likes)
- * - A API pública foi descontinuada em 2018
- * - Scraping é bloqueado progressivamente por rate-limit e CAPTCHA
- *
- * Este script tenta dois endpoints não-oficiais que o próprio webapp do Instagram usa:
- *   1. /api/v1/users/web_profile_info/ — retorna dados do perfil + até 12 posts
- *   2. Fallback via página HTML — tenta extrair seguidores de meta tags
- *
- * Quando dados completos não estão disponíveis, salva o que conseguiu e
- * registra um insight automático com o status da coleta.
- */
-
-const fetch      = require('node-fetch')
-const ws         = require('ws')
+const { chromium } = require('playwright')
+const ws           = require('ws')
 const { createClient } = require('@supabase/supabase-js')
 
-// ── Validação de ambiente ────────────────────────────────────────────
+// ── Ambiente ──────────────────────────────────────────────────────────
 const SUPABASE_URL = process.env.SUPABASE_URL
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY  // service_role bypassa o RLS
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY
 
 console.log('🔍 Diagnóstico de ambiente:')
-console.log('  SUPABASE_URL definida:        ', !!process.env.SUPABASE_URL)
-console.log('  SUPABASE_SERVICE_KEY definida:', !!process.env.SUPABASE_SERVICE_KEY)
+console.log('  SUPABASE_URL definida:        ', !!SUPABASE_URL)
+console.log('  SUPABASE_SERVICE_KEY definida:', !!SUPABASE_KEY)
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('❌ SUPABASE_URL e SUPABASE_SERVICE_KEY são obrigatórias')
@@ -36,40 +20,33 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   realtime: { transport: ws },
-  auth: { persistSession: false },  // scripts server-side não usam sessão
+  auth: { persistSession: false },
 })
+
 const HOJE = new Date().toISOString().slice(0, 10)
 
-// ── Headers simulando browser real ──────────────────────────────────
-const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+const USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
-const HEADERS_PAGE = {
-  'User-Agent': UA,
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-  'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8',
-  'Accept-Encoding': 'gzip, deflate, br',
-  'Sec-Fetch-Dest': 'document',
-  'Sec-Fetch-Mode': 'navigate',
-  'Sec-Fetch-Site': 'none',
-  'Upgrade-Insecure-Requests': '1',
-  'Cache-Control': 'max-age=0',
-}
-
-const HEADERS_API = {
-  ...HEADERS_PAGE,
-  'Accept': '*/*',
-  'Sec-Fetch-Dest': 'empty',
-  'Sec-Fetch-Mode': 'cors',
-  'Sec-Fetch-Site': 'same-origin',
-  'X-IG-App-ID': '936619743392459',   // App ID do webapp do Instagram
-  'X-Requested-With': 'XMLHttpRequest',
-  'Referer': 'https://www.instagram.com/',
-  'Origin': 'https://www.instagram.com',
-}
-
-// ── Utilitários ──────────────────────────────────────────────────────
+// ── Utilitários ───────────────────────────────────────────────────────
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function sleepRandom(minMs, maxMs) {
+  return sleep(minMs + Math.random() * (maxMs - minMs))
+}
+
+// Converte "1,2 mi", "890k", "45.000" → número inteiro
+function parseContagem(texto) {
+  if (!texto) return null
+  const t = texto.trim().replace(/\s/g, '')
+  if (/mi$/i.test(t))
+    return Math.round(parseFloat(t.replace(/[^\d,]/g, '').replace(',', '.')) * 1_000_000)
+  if (/[mk]$/i.test(t))
+    return Math.round(parseFloat(t.replace(/[^\d,]/g, '').replace(',', '.')) * 1_000)
+  const n = parseInt(t.replace(/\D/g, ''))
+  return isNaN(n) ? null : n
 }
 
 function fmtSeguidores(n) {
@@ -85,234 +62,318 @@ function extrairHashtags(texto) {
 }
 
 function inferirPerformance(views, likes) {
-  const metrica = views || likes || 0
-  return metrica > 100000 ? 'viral' : 'normal'
+  return (views || likes || 0) > 100000 ? 'viral' : 'normal'
 }
 
-// ── Coleta do perfil ─────────────────────────────────────────────────
-async function buscarPerfil(username) {
+// ── Coleta de seguidores do perfil ────────────────────────────────────
+async function coletarPerfil(page, handle) {
+  const username = handle.replace('@', '')
+  console.log(`  → Abrindo perfil: instagram.com/${username}/`)
 
-  // Tentativa 1: endpoint interno da API web do Instagram
-  try {
-    const url = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`
-    const res  = await fetch(url, { headers: HEADERS_API, timeout: 20000 })
+  await page.goto(`https://www.instagram.com/${username}/`, {
+    waitUntil: 'networkidle',
+    timeout: 30000,
+  })
+  await sleepRandom(2000, 3500)
 
-    if (res.ok) {
-      const json = await res.json()
-      const user = json?.data?.user
+  // Verificar redirecionamento para login
+  if (page.url().includes('/accounts/login')) {
+    console.log(`  ⚠️  Instagram exigiu login para ver o perfil`)
+    return { seguidores: null, posts_count: null, bloqueado: true }
+  }
 
-      if (user) {
-        const edges = user.edge_owner_to_timeline_media?.edges || []
-        const posts = edges.slice(0, 6).map(({ node }) => ({
-          shortcode:    node.shortcode,
-          tipo:         node.__typename === 'GraphVideo' ? 'reels' : 'post',
-          url:          `https://www.instagram.com/p/${node.shortcode}/`,
-          views:        node.video_view_count ?? null,
-          likes:        node.edge_liked_by?.count ?? node.edge_media_preview_like?.count ?? null,
-          comentarios:  node.edge_media_to_comment?.count ?? null,
-          legenda:      node.edge_media_to_caption?.edges?.[0]?.node?.text ?? null,
-          timestamp:    node.taken_at_timestamp ?? null,
-        }))
+  let seguidores  = null
+  let posts_count = null
+
+  // Estratégia 1: meta description — "1,2 mi Followers, 500 Following, 1.234 Posts"
+  const metaDesc = await page
+    .$eval('meta[name="description"]', el => el.getAttribute('content'))
+    .catch(() => null)
+
+  if (metaDesc) {
+    const mSeg   = metaDesc.match(/([\d,\.]+\s*(?:mi|m|k)?)\s*Followers?/i)
+    const mPosts = metaDesc.match(/([\d,\.]+)\s*Posts?/i)
+    if (mSeg)   seguidores  = parseContagem(mSeg[1])
+    if (mPosts) posts_count = parseInt(mPosts[1].replace(/\D/g, '')) || null
+  }
+
+  // Estratégia 2: <li> do header de stats
+  if (!seguidores) {
+    const liTextos = await page
+      .$$eval('header section ul li', els => els.map(e => e.innerText.trim()))
+      .catch(() => [])
+
+    for (const t of liTextos) {
+      if (/follower/i.test(t)) {
+        const m = t.match(/([\d,\.]+\s*(?:mi|m|k)?)/i)
+        if (m) seguidores = parseContagem(m[1])
+      }
+      if (/\bpost/i.test(t) && !posts_count) {
+        const m = t.match(/(\d[\d,\.]*)/)
+        if (m) posts_count = parseInt(m[1].replace(/\D/g, '')) || null
+      }
+    }
+  }
+
+  if (seguidores) console.log(`  ✅ Seguidores: ${fmtSeguidores(seguidores)}`)
+  else            console.log(`  ℹ️  Seguidores não encontrados no HTML`)
+
+  return { seguidores, posts_count, bloqueado: false }
+}
+
+// ── Coleta dos reels visíveis na aba /reels/ ──────────────────────────
+async function coletarLinksReels(page, handle) {
+  const username = handle.replace('@', '')
+  console.log(`  → Abrindo aba de reels`)
+
+  await page.goto(`https://www.instagram.com/${username}/reels/`, {
+    waitUntil: 'networkidle',
+    timeout: 30000,
+  })
+  await sleepRandom(2000, 3000)
+
+  if (page.url().includes('/accounts/login')) {
+    console.log(`  ⚠️  Reels bloqueados — Instagram exigiu login`)
+    return []
+  }
+
+  // Aguardar grid carregar
+  await page.waitForSelector('a[href*="/reel/"]', { timeout: 10000 }).catch(() => {})
+
+  // Scroll suave para carregar lazy content
+  await page.evaluate(() => window.scrollBy(0, 600))
+  await sleepRandom(1500, 2500)
+
+  const reels = await page.$$eval('a[href*="/reel/"]', links =>
+    [...new Set(links.map(a => a.getAttribute('href')))]
+      .filter(Boolean)
+      .slice(0, 6)
+      .map(href => {
+        const el  = document.querySelector(`a[href="${href}"]`)
+        const shortcode = href.match(/\/reel\/([^/]+)\//)?.[1] || null
+
+        // View count aparece como overlay no thumbnail (span com número)
+        const spans = el ? [...el.querySelectorAll('span')] : []
+        const viewsTexto = spans
+          .map(s => s.textContent.trim())
+          .find(t => /^[\d,\.]+\s*(?:mi|m|k)?$/i.test(t)) || null
 
         return {
-          ok: true,
-          fonte: 'api',
-          seguidores:   user.edge_followed_by?.count ?? null,
-          posts_count:  user.edge_owner_to_timeline_media?.count ?? null,
-          posts,
+          shortcode,
+          url: 'https://www.instagram.com' + href.replace(/\?.*/, ''),
+          views_texto: viewsTexto,
         }
-      }
-    }
+      })
+      .filter(r => r.shortcode)
+  ).catch(() => [])
 
-    console.log(`  ↳ API retornou ${res.status} — tentando fallback`)
-  } catch (e) {
-    console.log(`  ↳ API inacessível: ${e.message}`)
+  // Remover duplicatas por shortcode
+  const unicos = [...new Map(reels.map(r => [r.shortcode, r])).values()]
+  console.log(`  ✅ ${unicos.length} reel(s) encontrado(s)`)
+  return unicos
+}
+
+// ── Coleta de dados de um reel individual ─────────────────────────────
+async function coletarDadosReel(page, reelUrl) {
+  await page.goto(reelUrl, { waitUntil: 'networkidle', timeout: 30000 })
+  await sleepRandom(1500, 3000)
+
+  if (page.url().includes('/accounts/login')) {
+    return { likes: null, comentarios: null, legenda: null }
   }
 
-  await sleep(2500)
+  // Legenda: primeiro bloco de texto significativo da postagem
+  const legenda = await page
+    .$eval(
+      'h1, article div[role="button"] span, div._a9zs span, div.x9f619 span',
+      el => el.textContent.trim(),
+    )
+    .catch(() => null)
 
-  // Tentativa 2: página HTML do perfil (extrai o que está disponível no HTML)
-  try {
-    const url = `https://www.instagram.com/${username}/`
-    const res  = await fetch(url, { headers: HEADERS_PAGE, timeout: 20000 })
+  // Likes: procurar botão/seção com contagem de curtidas
+  const likesTexto = await page
+    .$$eval('section span, button span', spans => {
+      const candidatos = spans
+        .map(s => s.textContent.trim())
+        .filter(t => /^[\d,\.]+\s*(?:mi|m|k)?$/i.test(t) && t !== '0')
+      return candidatos[0] || null
+    })
+    .catch(() => null)
 
-    if (res.ok) {
-      const html = await res.text()
-
-      const followersMatch = html.match(/"edge_followed_by":\{"count":(\d+)\}/)
-      const postsMatch     = html.match(/"edge_owner_to_timeline_media":\{"count":(\d+)/)
-
-      return {
-        ok:          !!(followersMatch || postsMatch),
-        fonte:       'html',
-        seguidores:  followersMatch ? parseInt(followersMatch[1]) : null,
-        posts_count: postsMatch     ? parseInt(postsMatch[1])     : null,
-        posts:       [],             // dados de posts não disponíveis por HTML simples
-        aviso:       'Dados parciais (sem posts) — Instagram bloqueou a API',
-      }
-    }
-  } catch (e) {
-    console.log(`  ↳ Página HTML inacessível: ${e.message}`)
-  }
+  // Comentários: contar elementos de comentário na seção
+  const comentarios = await page
+    .$eval('ul li', () => null) // placeholder — requer scroll e seletor específico
+    .catch(() => null)
 
   return {
-    ok: false,
-    fonte: null,
-    seguidores: null,
-    posts_count: null,
-    posts: [],
-    aviso: 'Instagram bloqueou todos os acessos para este perfil',
+    likes:       likesTexto ? parseContagem(likesTexto) : null,
+    comentarios: comentarios,
+    legenda:     legenda ? legenda.slice(0, 400) : null,
   }
 }
 
-// ── Processamento de um concorrente ─────────────────────────────────
-async function processarConcorrente(concorrente) {
-  const username = concorrente.handle.replace('@', '')
+// ── Processamento de um concorrente ───────────────────────────────────
+async function processarConcorrente(page, concorrente) {
   console.log(`\n📱 ${concorrente.handle}`)
 
-  const dados = await buscarPerfil(username)
+  const resultado = { handle: concorrente.handle, posts_novos: 0, bloqueado: false }
 
-  const resultado = {
-    handle:       concorrente.handle,
-    ok:           dados.ok,
-    fonte:        dados.fonte,
-    posts_novos:  0,
-    aviso:        dados.aviso ?? null,
-  }
+  // 1. Perfil
+  const perfil = await coletarPerfil(page, concorrente.handle)
+  resultado.bloqueado = perfil.bloqueado
 
-  // Atualizar seguidores no cadastro
-  if (dados.seguidores) {
+  if (perfil.seguidores) {
     await supabase
       .from('mkt_concorrentes')
       .update({
-        seguidores_num:   dados.seguidores,
-        seguidores_texto: fmtSeguidores(dados.seguidores),
+        seguidores_num:   perfil.seguidores,
+        seguidores_texto: fmtSeguidores(perfil.seguidores),
       })
       .eq('id', concorrente.id)
-
-    console.log(`  ✅ Seguidores atualizados: ${fmtSeguidores(dados.seguidores)}`)
   }
 
-  // Salvar posts coletados (evitando duplicatas pela URL)
-  for (const post of dados.posts) {
-    if (!post.shortcode) continue
+  if (perfil.bloqueado) return resultado
 
+  await sleepRandom(1500, 2500)
+
+  // 2. Links dos reels
+  const reelLinks = await coletarLinksReels(page, concorrente.handle)
+
+  // 3. Dados individuais de cada reel
+  for (const reel of reelLinks) {
+    // Verificar duplicata
     const { data: existente } = await supabase
       .from('mkt_posts')
       .select('id')
-      .eq('url', post.url)
+      .eq('url', reel.url)
       .maybeSingle()
 
     if (existente) {
-      console.log(`  ⏭️  Já registrado: ${post.shortcode}`)
+      console.log(`  ⏭️  Já registrado: ${reel.shortcode}`)
       continue
     }
 
-    const dataPost = post.timestamp
-      ? new Date(post.timestamp * 1000).toISOString().slice(0, 10)
-      : HOJE
+    console.log(`  → Abrindo reel: ${reel.shortcode}`)
+    const dados = await coletarDadosReel(page, reel.url)
+
+    const views = reel.views_texto ? parseContagem(reel.views_texto) : null
 
     const { error } = await supabase.from('mkt_posts').insert({
       concorrente_id: concorrente.id,
-      data_coleta:    dataPost,
-      tipo:           post.tipo,
-      url:            post.url,
-      views:          post.views,
-      likes:          post.likes,
-      comentarios:    post.comentarios,
-      resumo_legenda: post.legenda ? post.legenda.slice(0, 400) : null,
-      hashtags:       extrairHashtags(post.legenda),
-      performance:    inferirPerformance(post.views, post.likes),
+      data_coleta:    HOJE,
+      tipo:           'reels',
+      url:            reel.url,
+      views:          views,
+      likes:          dados.likes,
+      comentarios:    dados.comentarios,
+      resumo_legenda: dados.legenda,
+      hashtags:       extrairHashtags(dados.legenda),
+      performance:    inferirPerformance(views, dados.likes),
     })
 
     if (!error) {
       resultado.posts_novos++
-      console.log(`  ✅ Post salvo: /p/${post.shortcode}/ (${post.views ?? '?'} views)`)
+      console.log(`  ✅ Salvo: ${reel.shortcode} (${views ?? '?'} views, ${dados.likes ?? '?'} likes)`)
     } else {
-      console.log(`  ❌ Erro ao salvar post: ${error.message}`)
+      console.log(`  ❌ Erro ao salvar: ${error.message}`)
     }
-  }
 
-  if (!dados.ok) {
-    console.log(`  ⚠️  ${dados.aviso}`)
-  } else if (dados.posts.length === 0) {
-    console.log(`  ℹ️  Perfil acessado mas sem posts disponíveis (${dados.fonte})`)
+    await sleepRandom(2000, 4000)
   }
 
   return resultado
 }
 
-// ── Main ─────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────
 async function main() {
-  console.log(`🚀 Coleta automática — ${HOJE}`)
+  console.log(`🚀 Coleta com Playwright — ${HOJE}`)
   console.log('─'.repeat(50))
 
-  // Buscar concorrentes ativos
-  const { data: concorrentes, error } = await supabase
+  // Concorrentes ativos
+  const { data: concorrentes, error: dbErr } = await supabase
     .from('mkt_concorrentes')
     .select('*')
     .eq('ativo', true)
     .order('nome')
 
-  if (error) {
-    console.error('❌ Erro ao buscar concorrentes:', error.message)
+  if (dbErr) {
+    console.error('❌ Erro ao buscar concorrentes:', dbErr.message)
     process.exit(1)
   }
 
   if (!concorrentes?.length) {
-    console.log('⚠️  Nenhum concorrente ativo encontrado. Cadastre perfis em mkt_concorrentes.')
+    console.log('⚠️  Nenhum concorrente ativo em mkt_concorrentes.')
     process.exit(0)
   }
 
   console.log(`📋 ${concorrentes.length} concorrente(s) para processar`)
 
+  // Lançar browser
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-infobars',
+      '--window-size=1440,900',
+    ],
+  })
+
+  const context = await browser.newContext({
+    userAgent:   USER_AGENT,
+    viewport:    { width: 1440, height: 900 },
+    locale:      'pt-BR',
+    timezoneId:  'America/Sao_Paulo',
+  })
+
+  const page = await context.newPage()
+
+  // Ocultar sinais de automação
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+    window.chrome = { runtime: {} }
+  })
+
   const resultados = []
 
   for (let i = 0; i < concorrentes.length; i++) {
-    const res = await processarConcorrente(concorrentes[i])
+    const res = await processarConcorrente(page, concorrentes[i])
     resultados.push(res)
 
-    // Pausa entre perfis para reduzir chance de bloqueio por rate-limit
     if (i < concorrentes.length - 1) {
-      console.log('  ⏳ Aguardando 4s...')
-      await sleep(4000)
+      const wait = 3000 + Math.random() * 4000  // 3–7 segundos
+      console.log(`  ⏳ Aguardando ${Math.round(wait / 1000)}s antes do próximo...`)
+      await sleep(wait)
     }
   }
 
-  // ── Resumo ──────────────────────────────────────────────────────────
-  const totalPosts   = resultados.reduce((s, r) => s + r.posts_novos, 0)
-  const coletados    = resultados.filter(r => r.ok).length
-  const bloqueados   = resultados.filter(r => !r.ok).length
+  await browser.close()
+
+  // ── Resumo ─────────────────────────────────────────────────────────
+  const totalPosts = resultados.reduce((s, r) => s + r.posts_novos, 0)
+  const acessados  = resultados.filter(r => !r.bloqueado).length
+  const bloqueados = resultados.filter(r => r.bloqueado).length
 
   console.log('\n' + '─'.repeat(50))
-  console.log('📊 Resumo da coleta:')
-  console.log(`  Perfis acessados:  ${coletados}/${resultados.length}`)
+  console.log('📊 Resumo:')
+  console.log(`  Perfis acessados:  ${acessados}/${resultados.length}`)
   console.log(`  Perfis bloqueados: ${bloqueados}/${resultados.length}`)
   console.log(`  Posts novos:       ${totalPosts}`)
 
-  // ── Insight automático ───────────────────────────────────────────────
+  // ── Insight automático ────────────────────────────────────────────
   let insight
-
   if (totalPosts > 0) {
-    const top = resultados.reduce((max, r) => r.posts_novos > max.posts_novos ? r : max, resultados[0])
-    insight = `Coleta automática ${HOJE}: ${totalPosts} post(s) novo(s) de ${coletados} perfil(s). Mais ativo: ${top.handle} com ${top.posts_novos} post(s) novo(s).`
-  } else if (coletados > 0) {
-    insight = `Coleta automática ${HOJE}: ${coletados} perfil(s) acessado(s), porém sem posts novos (conteúdo já registrado ou sem reels recentes).`
+    const top = resultados.reduce((m, r) => r.posts_novos > m.posts_novos ? r : m, resultados[0])
+    insight = `Coleta automática ${HOJE} (Playwright): ${totalPosts} reel(s) novo(s) de ${acessados} perfil(s). Mais ativo: ${top.handle} com ${top.posts_novos} reel(s).`
+  } else if (acessados > 0) {
+    insight = `Coleta automática ${HOJE}: ${acessados} perfil(s) acessado(s) sem reels novos — conteúdo já registrado ou aba de reels vazia.`
   } else {
-    insight = `Coleta automática ${HOJE}: Instagram bloqueou o acesso a todos os ${resultados.length} perfil(s). Considerar adicionar cookies de sessão ou usar API alternativa.`
+    insight = `Coleta automática ${HOJE}: Instagram bloqueou todos os ${resultados.length} perfil(s) — pode ser necessário adicionar cookies de sessão autenticada.`
   }
 
-  const { error: insightErr } = await supabase.from('mkt_insights').insert({
-    data:    HOJE,
-    insight,
-  })
-
-  if (insightErr) {
-    console.log(`⚠️  Erro ao salvar insight: ${insightErr.message}`)
-  } else {
-    console.log(`\n💡 Insight: ${insight}`)
-  }
-
+  await supabase.from('mkt_insights').insert({ data: HOJE, insight })
+  console.log(`\n💡 ${insight}`)
   console.log('\n✅ Coleta finalizada.')
 }
 

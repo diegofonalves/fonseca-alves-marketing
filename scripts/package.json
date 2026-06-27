@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.108.2",
-    "node-fetch": "^2.7.0",
+    "playwright": "^1.45.0",
     "ws": "^8.18.0"
   }
 }
