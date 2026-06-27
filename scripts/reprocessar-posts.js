@@ -65,6 +65,37 @@ function inferirFormato(legenda, hook) {
   return 'Talking Head'
 }
 
+// ── Parser resiliente da resposta do Claude ───────────────────────────
+function extrairAnalise(text) {
+  const clean = text
+    .replace(/```json\s*/gi, '')
+    .replace(/```\s*/g, '')
+    .trim()
+
+  try {
+    const obj = JSON.parse(clean)
+    const por_que_viralizou =
+      obj.por_que_viralizou              ||
+      obj.analise_conteudo?.por_que_viralizou ||
+      obj.analise?.por_que_viralizou     ||
+      null
+    const como_adaptar =
+      obj.como_adaptar                   ||
+      obj.analise_conteudo?.como_adaptar ||
+      obj.analise?.como_adaptar          ||
+      null
+    return { por_que_viralizou, como_adaptar }
+  } catch {
+    // Último recurso: regex direto no texto bruto
+    const pqv = clean.match(/"por_que_viralizou"\s*:\s*"([^"]+(?:\\.[^"]*)*)"/)
+    const ca  = clean.match(/"como_adaptar"\s*:\s*"([^"]+(?:\\.[^"]*)*)"/)
+    return {
+      por_que_viralizou: pqv ? pqv[1].replace(/\\n/g, ' ') : null,
+      como_adaptar:      ca  ? ca[1].replace(/\\n/g, ' ')  : null,
+    }
+  }
+}
+
 // ── Análise via Claude Haiku ──────────────────────────────────────────
 async function analisarComClaude(hook, legenda) {
   const apiKey = process.env.ANTHROPIC_API_KEY
@@ -99,22 +130,14 @@ LEGENDA: ${legenda || '(sem legenda)'}
     }
 
     const data = await res.json()
-    const rawText = (data.content?.[0]?.text || '{}')
-      .replace(/```json\s*/gi, '')
-      .replace(/```\s*/g, '')
-      .trim()
-    let json
-    try {
-      json = JSON.parse(rawText)
-    } catch (parseErr) {
-      console.log(`  ❌ Claude retornou JSON inválido: ${rawText}`)
-      return { por_que_viralizou: null, como_adaptar: null }
+    const rawText = data.content?.[0]?.text || '{}'
+    const resultado = extrairAnalise(rawText)
+
+    if (!resultado.por_que_viralizou && !resultado.como_adaptar) {
+      console.log(`  ❌ Claude não retornou campos esperados: ${rawText.slice(0, 200)}`)
     }
 
-    return {
-      por_que_viralizou: json.por_que_viralizou || null,
-      como_adaptar:      json.como_adaptar      || null,
-    }
+    return resultado
   } catch (e) {
     console.log(`  ❌ Claude falhou (exceção): ${e.message}`)
     console.log(`     Stack: ${e.stack}`)
