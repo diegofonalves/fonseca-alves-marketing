@@ -11,6 +11,7 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY
 console.log('🔍 Diagnóstico de ambiente:')
 console.log('  SUPABASE_URL definida:        ', !!SUPABASE_URL)
 console.log('  SUPABASE_SERVICE_KEY definida:', !!SUPABASE_KEY)
+console.log('  ANTHROPIC_API_KEY definida:   ', !!process.env.ANTHROPIC_API_KEY)
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('❌ SUPABASE_URL e SUPABASE_SERVICE_KEY são obrigatórias')
@@ -63,6 +64,56 @@ function extrairHashtags(texto) {
 
 function inferirPerformance(views, likes) {
   return (views || likes || 0) > 100000 ? 'viral' : 'normal'
+}
+
+// Infere formato a partir do conteúdo da legenda/hook
+function inferirFormato(legenda, hook) {
+  const texto = (hook || legenda || '').toLowerCase()
+  if (/\b(1\.|primeiro|2\.|segundo|passo\s*1|passo\s*a\s*passo)/i.test(texto)) return 'Passo a Passo'
+  if (/urgente|atenção|cuidado|alerta/i.test(texto))                             return 'Urgente'
+  if (/\?/.test(hook || ''))                                                      return 'Pergunta'
+  if (/^[\s\S]*?[•\-]\s/m.test(legenda || ''))                                   return 'Lista'
+  return 'Talking Head'
+}
+
+// Gera por_que_viralizou e como_adaptar via Claude Haiku (apenas para posts com >5000 views)
+async function analisarComClaude(hook, legenda) {
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) return { por_que_viralizou: null, como_adaptar: null }
+
+  try {
+    const prompt = `Analise este conteúdo do Instagram de um concorrente jurídico. Responda SOMENTE com JSON válido, sem markdown.
+
+HOOK: ${hook || '(sem hook)'}
+LEGENDA: ${legenda || '(sem legenda)'}
+
+{"por_que_viralizou":"2-3 frases sobre os gatilhos emocionais, formato e razão do alto engajamento","como_adaptar":"2-3 frases sugerindo como adaptar para advocacia bancária gaúcha (superendividamento, revisão de contrato, fraude bancária, nome sujo)"}`
+
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key':          apiKey,
+        'anthropic-version':  '2023-06-01',
+        'content-type':       'application/json',
+      },
+      body: JSON.stringify({
+        model:      'claude-3-5-haiku-20241022',
+        max_tokens: 300,
+        messages:   [{ role: 'user', content: prompt }],
+      }),
+    })
+
+    if (!res.ok) return { por_que_viralizou: null, como_adaptar: null }
+    const data = await res.json()
+    const json = JSON.parse(data.content?.[0]?.text || '{}')
+    return {
+      por_que_viralizou: json.por_que_viralizou || null,
+      como_adaptar:      json.como_adaptar      || null,
+    }
+  } catch (e) {
+    console.log(`  ⚠️  Análise Claude falhou: ${e.message}`)
+    return { por_que_viralizou: null, como_adaptar: null }
+  }
 }
 
 // ── Coleta de seguidores do perfil ────────────────────────────────────
@@ -179,35 +230,57 @@ async function coletarDadosReel(page, reelUrl) {
   await sleepRandom(1500, 3000)
 
   if (page.url().includes('/accounts/login')) {
-    return { likes: null, comentarios: null, legenda: null }
+    return { views: null, likes: null, comentarios: null, legenda: null }
   }
 
-  // Legenda: primeiro bloco de texto significativo da postagem
-  const legenda = await page
-    .$eval(
-      'h1, article div[role="button"] span, div._a9zs span, div.x9f619 span',
-      el => el.textContent.trim(),
-    )
-    .catch(() => null)
+  // ── Legenda completa ─────────────────────────────────────────────────
+  const legenda = await page.$$eval(
+    'h1._aagv span, div._a9zs span, div[class*="Caption"] span, article div span',
+    spans => {
+      for (const s of spans) {
+        const t = s.textContent.trim()
+        if (t.length > 20 && !t.startsWith('http')) return t
+      }
+      return null
+    }
+  ).catch(() => null)
 
-  // Likes: procurar botão/seção com contagem de curtidas
-  const likesTexto = await page
-    .$$eval('section span, button span', spans => {
-      const candidatos = spans
+  // ── Views ────────────────────────────────────────────────────────────
+  // Tentativa 1: aria-label "1.234 visualizações"
+  let views = null
+  const ariaViews = await page.$$eval('[aria-label]', els =>
+    els.map(e => e.getAttribute('aria-label')).find(a => /visualiza/i.test(a)) || null
+  ).catch(() => null)
+
+  if (ariaViews) {
+    const m = ariaViews.match(/([\d.,]+\s*(?:mi|m|k)?)/i)
+    if (m) views = parseContagem(m[1])
+  }
+
+  // Tentativa 2: span com classe de views
+  if (!views) {
+    const viewsTexto = await page.$eval(
+      'span[class*="view"], span._aacl._aaco._aacw._aacx._aad7._aade',
+      el => el.textContent.trim()
+    ).catch(() => null)
+    if (viewsTexto) views = parseContagem(viewsTexto)
+  }
+
+  // ── Likes (separado dos views) ───────────────────────────────────────
+  const likesTexto = await page.$$eval(
+    'section button span, section a span, div[role="button"] span',
+    spans => {
+      const nums = spans
         .map(s => s.textContent.trim())
         .filter(t => /^[\d,\.]+\s*(?:mi|m|k)?$/i.test(t) && t !== '0')
-      return candidatos[0] || null
-    })
-    .catch(() => null)
-
-  // Comentários: contar elementos de comentário na seção
-  const comentarios = await page
-    .$eval('ul li', () => null) // placeholder — requer scroll e seletor específico
-    .catch(() => null)
+      return nums[0] || null
+    }
+  ).catch(() => null)
 
   return {
+    views:       views,
     likes:       likesTexto ? parseContagem(likesTexto) : null,
-    comentarios: comentarios,
+    comentarios: null,
     legenda:     legenda ? legenda.slice(0, 400) : null,
   }
 }
@@ -256,24 +329,42 @@ async function processarConcorrente(page, concorrente) {
     console.log(`  → Abrindo reel: ${reel.shortcode}`)
     const dados = await coletarDadosReel(page, reel.url)
 
-    const views = reel.views_texto ? parseContagem(reel.views_texto) : null
+    // Views: priorizar o valor coletado na página do reel; fallback para thumbnail
+    const views = dados.views ?? (reel.views_texto ? parseContagem(reel.views_texto) : null)
+
+    // Hook = primeiras 100 chars da legenda
+    const hook = dados.legenda ? dados.legenda.slice(0, 100).split('\n')[0] : null
+
+    // Formato inferido do conteúdo
+    const formato = inferirFormato(dados.legenda, hook)
+
+    // Análise automática via Claude para posts com >5000 views
+    let analise = { por_que_viralizou: null, como_adaptar: null }
+    if ((views || 0) > 5000) {
+      console.log(`  🧠 Analisando com Claude (${views ?? '?'} views)...`)
+      analise = await analisarComClaude(hook, dados.legenda)
+    }
 
     const { error } = await supabase.from('mkt_posts').insert({
-      concorrente_id: concorrente.id,
-      data_coleta:    HOJE,
-      tipo:           'reels',
-      url:            reel.url,
-      views:          views,
-      likes:          dados.likes,
-      comentarios:    dados.comentarios,
-      resumo_legenda: dados.legenda,
-      hashtags:       extrairHashtags(dados.legenda),
-      performance:    inferirPerformance(views, dados.likes),
+      concorrente_id:    concorrente.id,
+      data_coleta:       HOJE,
+      tipo:              'reels',
+      url:               reel.url,
+      views:             views,
+      likes:             dados.likes,
+      comentarios:       dados.comentarios,
+      hook:              hook,
+      formato:           formato,
+      resumo_legenda:    dados.legenda,
+      hashtags:          extrairHashtags(dados.legenda),
+      por_que_viralizou: analise.por_que_viralizou,
+      como_adaptar:      analise.como_adaptar,
+      performance:       inferirPerformance(views, dados.likes),
     })
 
     if (!error) {
       resultado.posts_novos++
-      console.log(`  ✅ Salvo: ${reel.shortcode} (${views ?? '?'} views, ${dados.likes ?? '?'} likes)`)
+      console.log(`  ✅ Salvo: ${reel.shortcode} (${views ?? '?'} views, ${dados.likes ?? '?'} likes, formato: ${formato})`)
     } else {
       console.log(`  ❌ Erro ao salvar: ${error.message}`)
     }
