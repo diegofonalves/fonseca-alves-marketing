@@ -1,0 +1,13 @@
+{
+  "name": "fonseca-alves-marketing-scripts",
+  "version": "1.0.0",
+  "description": "Scripts de coleta automática",
+  "type": "commonjs",
+  "scripts": {
+    "coletar": "node coletar-instagram.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.108.2",
+    "node-fetch": "^2.7.0"
+  }
+}
