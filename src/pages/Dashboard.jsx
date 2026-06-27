@@ -163,19 +163,19 @@ function PostCard({ post, onVerTranscricao }) {
         )}
       </div>
 
-      {/* Hook */}
-      {post.hook && (
+      {/* Hook — fallback para titulo se hook for null */}
+      {(post.hook || post.titulo)?.trim() && (
         <p style={{
           fontSize: 14, fontWeight: 600, color: '#0a2540', fontStyle: 'italic',
           lineHeight: 1.5, marginBottom: 10,
           borderLeft: '3px solid #635bff', paddingLeft: 10,
         }}>
-          "{post.hook}"
+          "{(post.hook || post.titulo).trim()}"
         </p>
       )}
 
       {/* Resumo */}
-      {post.resumo_legenda && (
+      {post.resumo_legenda?.trim() && (
         <p style={{ fontSize: 13, color: '#425466', lineHeight: 1.6, marginBottom: 12 }}>
           {post.resumo_legenda}
         </p>
@@ -203,7 +203,7 @@ function PostCard({ post, onVerTranscricao }) {
             <ArrowSquareOut size={12} /> Ver Original
           </a>
         )}
-        {post.transcricao && (
+        {post.transcricao?.trim() && (
           <button onClick={() => onVerTranscricao(post)} style={{
             fontSize: 12, fontWeight: 500, padding: '6px 12px',
             background: '#f0efff', border: '1px solid #c7c5ff',
@@ -216,7 +216,7 @@ function PostCard({ post, onVerTranscricao }) {
       </div>
 
       {/* Por que Viralizou */}
-      {post.por_que_viralizou && (
+      {post.por_que_viralizou?.trim() && (
         <div style={{ background: '#f0efff', borderRadius: 8, padding: '12px 14px', marginBottom: 8 }}>
           <p style={{
             fontSize: 10, fontWeight: 700, color: '#635bff', marginBottom: 5,
@@ -232,7 +232,7 @@ function PostCard({ post, onVerTranscricao }) {
       )}
 
       {/* Como Adaptar */}
-      {post.como_adaptar && (
+      {post.como_adaptar?.trim() && (
         <div style={{ background: '#ecfdf5', borderRadius: 8, padding: '12px 14px' }}>
           <p style={{
             fontSize: 10, fontWeight: 700, color: '#00a854', marginBottom: 5,
