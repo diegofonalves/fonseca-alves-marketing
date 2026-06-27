@@ -108,25 +108,63 @@ LEGENDA: ${legenda || '(sem legenda)'}
 // ── Coleta de dados de um reel ────────────────────────────────────────
 async function coletarDadosReel(page, reelUrl) {
   await page.goto(reelUrl, { waitUntil: 'networkidle', timeout: 30000 })
-  await sleepRandom(1500, 3000)
+  await sleep(3000)  // aguardar carregamento completo do React
 
   if (page.url().includes('/accounts/login')) {
     return null  // bloqueado — pular este post
   }
 
-  // Legenda completa
-  const legenda = await page.$$eval(
-    'h1._aagv span, div._a9zs span, div[class*="Caption"] span, article div span',
-    spans => {
-      for (const s of spans) {
-        const t = s.textContent.trim()
-        if (t.length > 20 && !t.startsWith('http')) return t
-      }
-      return null
-    }
-  ).catch(() => null)
+  // ── Legenda via text nodes visíveis ──────────────────────────────────
+  let legenda = await page.evaluate(() => {
+    const ignorarUI = /^(curtir|comentar|compartilhar|seguir|ver mais|ir para|baixar|continuar|instagram|reels|explorar|direct|notifica|pesquisar|publicar|criar|salvar|editar|cancelar|enviar|reel|áudio|vídeo|foto|story|stories|música|original)$/i
+    const soNumerosOuPontuacao = /^[\d\s.,+\-kmKM%·•]+$/
 
-  // Views — aria-label primeiro
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+    const candidatos = []
+    let node
+
+    while ((node = walker.nextNode())) {
+      const el = node.parentElement
+      if (!el) continue
+      if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(el.tagName)) continue
+
+      const style = window.getComputedStyle(el)
+      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue
+
+      const t = node.textContent.trim()
+      if (t.length < 20) continue
+      if (soNumerosOuPontuacao.test(t)) continue
+      if (ignorarUI.test(t.toLowerCase())) continue
+      if (t.startsWith('http')) continue
+
+      candidatos.push(t)
+    }
+
+    if (!candidatos.length) return null
+    // O mais longo é o mais provável de ser a legenda
+    return candidatos.reduce((max, t) => t.length > max.length ? t : max, '')
+  }).catch(() => null)
+
+  // ── Fallback: meta og:description ────────────────────────────────────
+  if (!legenda) {
+    const ogDesc = await page
+      .$eval('meta[property="og:description"]', el => el.getAttribute('content'))
+      .catch(() => null)
+
+    if (ogDesc) {
+      // Formato típico: "1.234 curtidas, 56 comentários - @user: 'legenda aqui'"
+      const m = ogDesc.match(/[:\-]\s*["']?(.{20,})["']?\s*$/)
+      legenda = m ? m[1].trim() : (ogDesc.length > 20 ? ogDesc : null)
+    }
+  }
+
+  if (legenda) {
+    console.log(`  📝 Legenda encontrada: "${legenda.slice(0, 60)}..."`)
+  } else {
+    console.log(`  ⚠️  Legenda não encontrada`)
+  }
+
+  // ── Views via aria-label "visualizações" ──────────────────────────────
   let views = null
   const ariaViews = await page.$$eval('[aria-label]', els =>
     els.map(e => e.getAttribute('aria-label')).find(a => /visualiza/i.test(a)) || null
@@ -137,28 +175,21 @@ async function coletarDadosReel(page, reelUrl) {
     if (m) views = parseContagem(m[1])
   }
 
-  if (!views) {
-    const viewsTexto = await page.$eval(
-      'span[class*="view"], span._aacl._aaco._aacw._aacx._aad7._aade',
-      el => el.textContent.trim()
-    ).catch(() => null)
-    if (viewsTexto) views = parseContagem(viewsTexto)
-  }
-
-  // Likes — separados dos views
-  const likesTexto = await page.$$eval(
-    'section button span, section a span, div[role="button"] span',
-    spans => {
-      const nums = spans
-        .map(s => s.textContent.trim())
-        .filter(t => /^[\d,\.]+\s*(?:mi|m|k)?$/i.test(t) && t !== '0')
-      return nums[0] || null
-    }
+  // ── Likes via aria-label "curtidas" ───────────────────────────────────
+  // Não usar fallback para views — se não encontrar likes, salvar null
+  let likes = null
+  const ariaLikes = await page.$$eval('[aria-label]', els =>
+    els.map(e => e.getAttribute('aria-label')).find(a => /curtida|like/i.test(a)) || null
   ).catch(() => null)
 
+  if (ariaLikes) {
+    const m = ariaLikes.match(/([\d.,]+\s*(?:mi|m|k)?)/i)
+    if (m) likes = parseContagem(m[1])
+  }
+
   return {
-    views,
-    likes:  likesTexto ? parseContagem(likesTexto) : null,
+    views,   // null se não encontrado — não copiar de likes
+    likes,
     legenda: legenda ? legenda.slice(0, 400) : null,
   }
 }
@@ -263,9 +294,7 @@ async function main() {
     }
 
     const hook   = dados.legenda ? dados.legenda.slice(0, 100).split('\n')[0] : null
-    const titulo = hook
-      ? hook.slice(0, 80)
-      : (post.url.split('/').filter(Boolean).pop() || 'Sem título')
+    const titulo = hook ? hook.slice(0, 80) : null  // null se não encontrou legenda (evita salvar o ID do reel)
     const formato = inferirFormato(dados.legenda, hook)
     const views   = dados.views ?? post.views
     const likes   = dados.likes ?? post.likes
