@@ -268,13 +268,13 @@ async function main() {
   console.log(`🔄 Reprocessar posts incompletos — ${hoje}`)
   console.log('─'.repeat(50))
 
-  // Buscar posts sem dados completos
+  // Buscar posts sem titulo OU com views altas sem análise
   const { data: posts, error: dbErr } = await supabase
     .from('mkt_posts')
     .select('id, url, views, likes, titulo')
-    .or('titulo.is.null,titulo.eq.Instagram')
+    .or('titulo.is.null,titulo.eq.Instagram,and(por_que_viralizou.is.null,views.gt.500)')
     .not('url', 'is', null)
-    .order('criado_em', { ascending: false })
+    .order('views', { ascending: false })
     .limit(50)
 
   if (dbErr) {
