@@ -17,6 +17,7 @@
  */
 
 const fetch      = require('node-fetch')
+const ws         = require('ws')
 const { createClient } = require('@supabase/supabase-js')
 
 // ── Validação de ambiente ────────────────────────────────────────────
@@ -28,7 +29,9 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   process.exit(1)
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  realtime: { transport: ws },
+})
 const HOJE = new Date().toISOString().slice(0, 10)
 
 // ── Headers simulando browser real ──────────────────────────────────
