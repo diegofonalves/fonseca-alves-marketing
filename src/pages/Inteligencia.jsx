@@ -1,13 +1,14 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
+import { Brain, Users, Article, Trophy, Tray } from '@phosphor-icons/react'
 
-// ── Mock data ────────────────────────────────────────────────────────
+const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #e3e8ee', boxShadow: '0 2px 5px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.03)' }
+
 const MOCK_CONCORRENTES = [
   { id: 'c1', handle: '@escribaconcursos',      nome: 'Escriva Concursos',       seguidores_texto: '120k', ativo: true },
   { id: 'c2', handle: '@direitoseutrabalhista',  nome: 'Direito Seu Trabalhista', seguidores_texto: '890k', ativo: true },
   { id: 'c3', handle: '@drcarlospecas',          nome: 'Dr. Carlos Peças',        seguidores_texto: '45k',  ativo: true },
 ]
-
 const MOCK_POSTS = [
   { concorrente_id: 'c1', views: 487000, performance: 'viral' },
   { concorrente_id: 'c1', views: 89000,  performance: 'normal' },
@@ -16,7 +17,6 @@ const MOCK_POSTS = [
   { concorrente_id: 'c3', views: 54000,   performance: 'normal' },
 ]
 
-// ── Helpers ──────────────────────────────────────────────────────────
 function fmtNum(n) {
   if (!n && n !== 0) return '0'
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace('.0', '') + 'M'
@@ -24,36 +24,27 @@ function fmtNum(n) {
   return String(n)
 }
 
-function inicialHandle(handle) {
-  return (handle || '?').replace('@', '').charAt(0).toUpperCase()
-}
+function inicialHandle(h) { return (h || '?').replace('@', '').charAt(0).toUpperCase() }
 
 function calcStats(concorrentes, posts) {
   return concorrentes.map(c => {
-    const cPosts = posts.filter(p => p.concorrente_id === c.id)
-    const totalViews = cPosts.reduce((s, p) => s + (p.views || 0), 0)
-    const avgViews   = cPosts.length ? Math.round(totalViews / cPosts.length) : 0
-    const virais     = cPosts.filter(p => p.performance === 'viral').length
-    const melhorPost = cPosts.reduce((max, p) => Math.max(max, p.views || 0), 0)
-    return { ...c, postsCount: cPosts.length, avgViews, virais, melhorPost }
+    const cPosts   = posts.filter(p => p.concorrente_id === c.id)
+    const totalV   = cPosts.reduce((s, p) => s + (p.views || 0), 0)
+    const avgViews = cPosts.length ? Math.round(totalV / cPosts.length) : 0
+    const virais   = cPosts.filter(p => p.performance === 'viral').length
+    const melhor   = cPosts.reduce((max, p) => Math.max(max, p.views || 0), 0)
+    return { ...c, postsCount: cPosts.length, avgViews, virais, melhorPost: melhor }
   }).sort((a, b) => b.avgViews - a.avgViews)
 }
 
-// ── Barra de progresso ───────────────────────────────────────────────
-function Barra({ value, max, color = '#2563eb' }) {
+function Barra({ value, max, color }) {
   const pct = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-      <div style={{ flex: 1, height: 6, background: '#f1f5f9', borderRadius: 3, overflow: 'hidden' }}>
-        <div style={{
-          width: `${pct}%`, height: '100%',
-          background: color, borderRadius: 3,
-          transition: 'width 0.4s ease',
-        }} />
+      <div style={{ flex: 1, height: 6, background: '#f6f9fc', borderRadius: 3, overflow: 'hidden', border: '1px solid #e3e8ee' }}>
+        <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 3, transition: 'width 0.4s ease' }} />
       </div>
-      <span style={{ fontSize: 12, color: '#475569', minWidth: 44, textAlign: 'right', fontWeight: 600 }}>
-        {fmtNum(value)}
-      </span>
+      <span style={{ fontSize: 12, color: '#425466', minWidth: 44, textAlign: 'right', fontWeight: 600 }}>{fmtNum(value)}</span>
     </div>
   )
 }
@@ -71,193 +62,102 @@ export default function Inteligencia() {
         supabase.from('mkt_concorrentes').select('*').eq('ativo', true).order('nome'),
         supabase.from('mkt_posts').select('concorrente_id, views, performance'),
       ])
-
-      if (!concs?.length) {
-        setUsandoMock(true)
-        setConcorrentes(MOCK_CONCORRENTES)
-        setPosts(MOCK_POSTS)
-      } else {
-        setConcorrentes(concs)
-        setPosts(ps || [])
-      }
+      if (!concs?.length) { setUsandoMock(true); setConcorrentes(MOCK_CONCORRENTES); setPosts(MOCK_POSTS) }
+      else { setConcorrentes(concs); setPosts(ps || []) }
       setLoading(false)
     }
     init()
   }, [])
 
   const stats = useMemo(() => calcStats(concorrentes, posts), [concorrentes, posts])
+  const maxAvg    = Math.max(...stats.map(s => s.avgViews), 1)
+  const maxVirais = Math.max(...stats.map(s => s.virais), 1)
+  const maxMelhor = Math.max(...stats.map(s => s.melhorPost), 1)
 
-  const maxAvg     = Math.max(...stats.map(s => s.avgViews), 1)
-  const maxVirais  = Math.max(...stats.map(s => s.virais), 1)
-  const maxMelhor  = Math.max(...stats.map(s => s.melhorPost), 1)
-
-  const COLUNAS = [
-    { label: 'Concorrente', width: '25%' },
-    { label: 'Seguidores',  width: '10%' },
-    { label: 'Posts',       width: '8%' },
-    { label: 'Média de Views', width: '22%' },
-    { label: 'Virais',      width: '15%' },
-    { label: 'Melhor Post', width: '20%' },
-  ]
+  const COLS = ['25%', '10%', '8%', '22%', '15%', '20%']
+  const COL_LABELS = ['Concorrente', 'Seguidores', 'Posts', 'Média de Views', 'Virais', 'Melhor Post']
 
   return (
     <div style={{ maxWidth: 1200 }}>
-
-      {/* Header */}
-      <div style={{
-        background: '#fff', borderRadius: 12, padding: '18px 24px',
-        marginBottom: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-        border: '1px solid #e2e8f0',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      }}>
+      <div style={{ ...CARD, padding: '20px 24px', marginBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: '#1e293b', margin: '0 0 2px' }}>Inteligência</h1>
-          <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>Análise comparativa entre concorrentes monitorados</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+            <Brain size={22} weight="bold" color="#635bff" />
+            <h1 style={{ fontSize: 24, fontWeight: 600, color: '#0a2540', margin: 0, letterSpacing: '-0.3px' }}>Inteligência</h1>
+          </div>
+          <p style={{ color: '#8898aa', fontSize: 14, margin: 0 }}>Análise comparativa entre concorrentes monitorados</p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {usandoMock && (
-            <span style={{ fontSize: 10, fontWeight: 600, padding: '4px 10px', borderRadius: 20, background: '#fefce8', color: '#92400e', border: '1px solid #fde68a' }}>
-              dados mock
-            </span>
-          )}
-          <span style={{ fontSize: 24 }}>🧠</span>
-        </div>
+        {usandoMock && <span style={{ fontSize: 10, fontWeight: 600, padding: '4px 10px', borderRadius: 20, background: '#fffbeb', color: '#855900', border: '1px solid #f5be58' }}>dados mock</span>}
       </div>
 
-      {/* Cards de resumo */}
       {!loading && stats.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, marginBottom: 20 }}>
           {[
-            { label: 'Concorrentes Monitorados', value: stats.length, icon: '👥' },
-            { label: 'Posts Analisados',          value: posts.length, icon: '📋' },
-            {
-              label: 'Maior Média de Views',
-              value: stats[0] ? `${fmtNum(stats[0].avgViews)} (${stats[0].handle})` : '—',
-              icon: '🏆',
-            },
+            { label: 'Concorrentes Monitorados', value: stats.length,  Icon: Users,   color: '#635bff' },
+            { label: 'Posts Analisados',          value: posts.length,  Icon: Article, color: '#4f7df3' },
+            { label: 'Maior Média de Views',       value: stats[0] ? `${fmtNum(stats[0].avgViews)}` : '—', Icon: Trophy, color: '#f5be58' },
           ].map(m => (
-            <div key={m.label} style={{
-              background: '#fff', borderRadius: 12, padding: '18px 20px',
-              border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            }}>
+            <div key={m.label} style={{ ...CARD, padding: '18px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
-                <p style={{ fontSize: 10, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>{m.label}</p>
-                <p style={{ fontSize: 22, fontWeight: 800, color: '#1e293b', lineHeight: 1 }}>{m.value}</p>
+                <p style={{ fontSize: 10, fontWeight: 600, color: '#8898aa', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>{m.label}</p>
+                <p style={{ fontSize: 28, fontWeight: 700, color: '#0a2540', lineHeight: 1 }}>{m.value}</p>
               </div>
-              <span style={{ fontSize: 22 }}>{m.icon}</span>
+              <div style={{ width: 36, height: 36, borderRadius: 8, background: `${m.color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <m.Icon size={18} weight="bold" color={m.color} />
+              </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Loading */}
-      {loading && (
-        <div style={{ background: '#fff', borderRadius: 12, padding: 56, textAlign: 'center', border: '1px solid #e2e8f0' }}>
-          <p style={{ color: '#94a3b8', fontSize: 14 }}>Carregando dados...</p>
-        </div>
-      )}
+      {loading && <div style={{ ...CARD, padding: 56, textAlign: 'center' }}><p style={{ color: '#8898aa' }}>Carregando dados...</p></div>}
 
-      {/* Estado vazio */}
       {!loading && stats.length === 0 && (
-        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 56, textAlign: 'center' }}>
-          <p style={{ fontSize: 40, marginBottom: 12 }}>📭</p>
-          <p style={{ fontSize: 15, fontWeight: 600, color: '#1e293b' }}>Nenhum concorrente cadastrado ainda</p>
+        <div style={{ ...CARD, padding: 56, textAlign: 'center' }}>
+          <Tray size={40} weight="thin" color="#8898aa" style={{ marginBottom: 12 }} />
+          <p style={{ fontSize: 15, fontWeight: 600, color: '#0a2540' }}>Nenhum concorrente cadastrado ainda</p>
         </div>
       )}
 
-      {/* Tabela comparativa */}
       {!loading && stats.length > 0 && (
-        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
-
-          {/* Cabeçalho */}
-          <div style={{
-            display: 'grid', gridTemplateColumns: COLUNAS.map(c => c.width).join(' '),
-            padding: '12px 20px', background: '#f8fafc',
-            borderBottom: '1px solid #e2e8f0',
-          }}>
-            {COLUNAS.map(col => (
-              <div key={col.label} style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.6 }}>
-                {col.label}
-              </div>
-            ))}
+        <div style={{ ...CARD, overflow: 'hidden' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: COLS.join(' '), padding: '12px 20px', background: '#f6f9fc', borderBottom: '1px solid #e3e8ee' }}>
+            {COL_LABELS.map(l => <div key={l} style={{ fontSize: 10, fontWeight: 700, color: '#8898aa', textTransform: 'uppercase', letterSpacing: 0.6 }}>{l}</div>)}
           </div>
-
-          {/* Linhas */}
           {stats.map((s, i) => (
-            <div key={s.id} style={{
-              display: 'grid',
-              gridTemplateColumns: COLUNAS.map(c => c.width).join(' '),
-              padding: '16px 20px', alignItems: 'center',
-              borderBottom: i < stats.length - 1 ? '1px solid #f1f5f9' : 'none',
-              background: i === 0 ? '#fafbff' : '#fff',
-            }}>
+            <div key={s.id} style={{ display: 'grid', gridTemplateColumns: COLS.join(' '), padding: '16px 20px', alignItems: 'center', borderBottom: i < stats.length - 1 ? '1px solid #f6f9fc' : 'none', background: i === 0 ? '#fafbff' : '#fff' }}>
               {/* Concorrente */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                {i === 0 && (
-                  <span style={{ fontSize: 14, marginRight: 2 }}>🏆</span>
-                )}
-                <div style={{
-                  width: 32, height: 32, borderRadius: '50%',
-                  background: 'linear-gradient(135deg, #1e3a5f, #2563eb)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 13, fontWeight: 800, color: '#fff', flexShrink: 0,
-                }}>
+                {i === 0 && <Trophy size={14} weight="fill" color="#f5be58" />}
+                <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'linear-gradient(135deg, #635bff, #4f7df3)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0 }}>
                   {inicialHandle(s.handle)}
                 </div>
                 <div>
-                  <p style={{ fontSize: 13, fontWeight: 700, color: '#1e293b', margin: '0 0 1px' }}>{s.nome}</p>
-                  <p style={{ fontSize: 11, color: '#94a3b8', margin: 0 }}>{s.handle}</p>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: '#0a2540', margin: '0 0 1px' }}>{s.nome}</p>
+                  <p style={{ fontSize: 11, color: '#8898aa', margin: 0 }}>{s.handle}</p>
                 </div>
               </div>
-
               {/* Seguidores */}
-              <div>
-                <span style={{ fontSize: 13, fontWeight: 600, color: '#475569' }}>
-                  {s.seguidores_texto || '—'}
-                </span>
-              </div>
-
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#425466' }}>{s.seguidores_texto || '—'}</span>
               {/* Posts */}
-              <div>
-                <span style={{
-                  fontSize: 13, fontWeight: 700, color: '#1e293b',
-                  background: '#f1f5f9', padding: '2px 8px', borderRadius: 20,
-                }}>
-                  {s.postsCount}
-                </span>
-              </div>
-
-              {/* Média de Views */}
-              <div style={{ paddingRight: 16 }}>
-                <Barra value={s.avgViews} max={maxAvg} color="#2563eb" />
-              </div>
-
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#0a2540', background: '#f6f9fc', padding: '2px 8px', borderRadius: 20, display: 'inline-block' }}>{s.postsCount}</span>
+              {/* Avg Views */}
+              <div style={{ paddingRight: 16 }}><Barra value={s.avgViews}   max={maxAvg}    color="#635bff" /></div>
               {/* Virais */}
-              <div style={{ paddingRight: 16 }}>
-                <Barra value={s.virais} max={maxVirais} color="#ef4444" />
-              </div>
-
-              {/* Melhor Post */}
-              <div style={{ paddingRight: 8 }}>
-                <Barra value={s.melhorPost} max={maxMelhor} color="#22c55e" />
-              </div>
+              <div style={{ paddingRight: 16 }}><Barra value={s.virais}    max={maxVirais} color="#ed5f74" /></div>
+              {/* Melhor */}
+              <div style={{ paddingRight: 8 }}>  <Barra value={s.melhorPost} max={maxMelhor} color="#00d97e" /></div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Legenda */}
       {!loading && stats.length > 0 && (
-        <div style={{ display: 'flex', gap: 20, marginTop: 14, paddingLeft: 4 }}>
-          {[
-            { color: '#2563eb', label: 'Média de Views' },
-            { color: '#ef4444', label: 'Conteúdos Virais' },
-            { color: '#22c55e', label: 'Melhor Post' },
-          ].map(l => (
+        <div style={{ display: 'flex', gap: 20, marginTop: 12, paddingLeft: 4 }}>
+          {[{ color: '#635bff', label: 'Média de Views' }, { color: '#ed5f74', label: 'Virais' }, { color: '#00d97e', label: 'Melhor Post' }].map(l => (
             <div key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <div style={{ width: 10, height: 10, borderRadius: 2, background: l.color }} />
-              <span style={{ fontSize: 11, color: '#94a3b8' }}>{l.label}</span>
+              <span style={{ fontSize: 11, color: '#8898aa' }}>{l.label}</span>
             </div>
           ))}
         </div>
