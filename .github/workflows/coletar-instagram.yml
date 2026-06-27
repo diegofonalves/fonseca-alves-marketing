@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 13 * * *'   # 13h UTC = 10h horário de Brasília (BRT = UTC-3)
   workflow_dispatch:         # Botão para rodar manualmente no GitHub Actions
+    inputs:
+      reprocessar:
+        description: 'Reprocessar posts sem dados completos (titulo IS NULL ou = Instagram)'
+        type: boolean
+        default: false
 
 jobs:
   coletar:
@@ -29,6 +34,38 @@ jobs:
 
       - name: Executar coleta
         run: node coletar-instagram.js
+        working-directory: scripts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          INSTAGRAM_COOKIES: ${{ secrets.INSTAGRAM_COOKIES }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  reprocessar-posts:
+    name: Reprocessar posts incompletos
+    runs-on: ubuntu-latest
+    needs: coletar
+    if: ${{ github.event.inputs.reprocessar == 'true' }}
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar dependências
+        run: npm install
+        working-directory: scripts
+
+      - name: Instalar Playwright Chromium
+        run: npx playwright install chromium --with-deps
+        working-directory: scripts
+
+      - name: Reprocessar posts
+        run: node reprocessar-posts.js
         working-directory: scripts
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
