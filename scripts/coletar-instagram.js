@@ -331,11 +331,43 @@ async function main() {
   const cookiesRaw = process.env.INSTAGRAM_COOKIES
   if (cookiesRaw) {
     try {
-      const cookies = JSON.parse(cookiesRaw)
+      const raw = JSON.parse(cookiesRaw)
+
+      const SAME_SITE_MAP = {
+        no_restriction: 'None',
+        none:           'None',
+        lax:            'Lax',
+        strict:         'Strict',
+      }
+
+      const cookies = raw.map(c => {
+        // Normalizar sameSite
+        const sameSiteKey = (c.sameSite || '').toString().toLowerCase()
+        const sameSite = SAME_SITE_MAP[sameSiteKey] || 'Lax'
+
+        // Campos aceitos pelo Playwright (remover o resto)
+        const normalized = {
+          name:     c.name,
+          value:    c.value,
+          domain:   c.domain,
+          path:     c.path || '/',
+          sameSite,
+        }
+
+        // expirationDate (Cookie-Editor) → expires (Playwright)
+        const exp = c.expires ?? c.expirationDate
+        if (exp != null) normalized.expires = Number(exp)
+
+        if (c.httpOnly != null) normalized.httpOnly = Boolean(c.httpOnly)
+        if (c.secure   != null) normalized.secure   = Boolean(c.secure)
+
+        return normalized
+      }).filter(c => c.name && c.value && c.domain)
+
       await context.addCookies(cookies)
-      console.log(`🍪 Cookies de sessão carregados: ${cookies.length} cookies`)
+      console.log(`🍪 Cookies de sessão carregados: ${cookies.length} cookie(s) normalizados`)
     } catch (e) {
-      console.log(`⚠️  INSTAGRAM_COOKIES inválido (JSON malformado): ${e.message}`)
+      console.log(`⚠️  INSTAGRAM_COOKIES inválido: ${e.message}`)
     }
   } else {
     console.log('⚠️  Sem cookies — modo anônimo (reels podem ser bloqueados)')
