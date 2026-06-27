@@ -327,6 +327,20 @@ async function main() {
     timezoneId:  'America/Sao_Paulo',
   })
 
+  // ── Cookies de sessão ─────────────────────────────────────────────
+  const cookiesRaw = process.env.INSTAGRAM_COOKIES
+  if (cookiesRaw) {
+    try {
+      const cookies = JSON.parse(cookiesRaw)
+      await context.addCookies(cookies)
+      console.log(`🍪 Cookies de sessão carregados: ${cookies.length} cookies`)
+    } catch (e) {
+      console.log(`⚠️  INSTAGRAM_COOKIES inválido (JSON malformado): ${e.message}`)
+    }
+  } else {
+    console.log('⚠️  Sem cookies — modo anônimo (reels podem ser bloqueados)')
+  }
+
   const page = await context.newPage()
 
   // Ocultar sinais de automação
