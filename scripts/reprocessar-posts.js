@@ -92,15 +92,29 @@ LEGENDA: ${legenda || '(sem legenda)'}
       }),
     })
 
-    if (!res.ok) return { por_que_viralizou: null, como_adaptar: null }
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '(sem corpo)')
+      console.log(`  ❌ Claude retornou HTTP ${res.status}: ${errBody}`)
+      return { por_que_viralizou: null, como_adaptar: null }
+    }
+
     const data = await res.json()
-    const json = JSON.parse(data.content?.[0]?.text || '{}')
+    const rawText = data.content?.[0]?.text || '{}'
+    let json
+    try {
+      json = JSON.parse(rawText)
+    } catch (parseErr) {
+      console.log(`  ❌ Claude retornou JSON inválido: ${rawText}`)
+      return { por_que_viralizou: null, como_adaptar: null }
+    }
+
     return {
       por_que_viralizou: json.por_que_viralizou || null,
       como_adaptar:      json.como_adaptar      || null,
     }
   } catch (e) {
-    console.log(`  ⚠️  Claude falhou: ${e.message}`)
+    console.log(`  ❌ Claude falhou (exceção): ${e.message}`)
+    console.log(`     Stack: ${e.stack}`)
     return { por_que_viralizou: null, como_adaptar: null }
   }
 }
@@ -299,9 +313,9 @@ async function main() {
     const views   = dados.views ?? post.views
     const likes   = dados.likes ?? post.likes
 
-    // Análise Claude para posts com engajamento significativo
+    // Análise Claude para posts com pelo menos 500 views
     let analise = { por_que_viralizou: null, como_adaptar: null }
-    if ((views || 0) > 5000) {
+    if ((views || 0) > 500) {
       console.log(`  🧠 Analisando com Claude (${views ?? '?'} views)...`)
       analise = await analisarComClaude(hook, dados.legenda)
     }
