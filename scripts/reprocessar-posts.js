@@ -99,7 +99,10 @@ LEGENDA: ${legenda || '(sem legenda)'}
     }
 
     const data = await res.json()
-    const rawText = data.content?.[0]?.text || '{}'
+    const rawText = (data.content?.[0]?.text || '{}')
+      .replace(/```json\s*/gi, '')
+      .replace(/```\s*/g, '')
+      .trim()
     let json
     try {
       json = JSON.parse(rawText)

@@ -105,7 +105,11 @@ LEGENDA: ${legenda || '(sem legenda)'}
 
     if (!res.ok) return { por_que_viralizou: null, como_adaptar: null }
     const data = await res.json()
-    const json = JSON.parse(data.content?.[0]?.text || '{}')
+    const rawText = (data.content?.[0]?.text || '{}')
+      .replace(/```json\s*/gi, '')
+      .replace(/```\s*/g, '')
+      .trim()
+    const json = JSON.parse(rawText)
     return {
       por_que_viralizou: json.por_que_viralizou || null,
       como_adaptar:      json.como_adaptar      || null,
